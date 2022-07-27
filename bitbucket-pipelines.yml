@@ -1,0 +1,121 @@
+image: node:16.15.0
+
+pipelines:
+
+  # Pipelines that run automatically on every push
+  default:
+    - step:
+        name: 'Build and Test'
+        script:
+          - npm install
+          - npm run build-container
+          - echo "Tests coming soon..."
+    - parallel:
+      - step:
+          name: 'Lint'
+          script:
+            - npm install
+            - npm run lint
+      - step:
+          name: 'Security scan'
+          script:
+            - echo "Security scan coming soon..."
+
+  # Pipelines that run automatically on commits to specified branches
+  branches:
+    main:
+      - step:
+          name: Build for Staging
+          script:
+            - npm install
+            - npm run build-container
+      - step:
+          name: Environment Abstraction for Staging
+          script:
+            - bash --version
+            - apt-get install openssh-client
+
+            # Validate env keys array file exists in app repo
+            - > 
+              if [ ! -f $ENV_KEYS_ARRAY_FILE ]; then
+                  echo "env keys array file not found!"
+                  exit 1
+              fi
+            - cat $ENV_KEYS_ARRAY_FILE
+
+            # Validate staging environment file exists in env repo
+            - git clone git@bitbucket.org:ellingsenplatforms/ellingsengroup-environment.git
+            - > 
+              if [ ! -f ellingsengroup-environment/$APP_NAME/.env.staging ]; then
+                  echo "env file not found!"
+                  exit 1
+              fi
+
+            # Copy env file to be passed to next stage
+            - yes | cp -rf ellingsengroup-environment/$APP_NAME/.env.staging .env.temp
+            - rm -rf ellingsengroup-environment
+            - ls -alh
+            - cat .env.temp
+
+            # Validate all env keys in app repo and env repo match
+            - readarray -t app_env_keys < $ENV_KEYS_ARRAY_FILE
+            - >
+              for app_key in "${app_env_keys[@]}"; 
+                do echo $app_key; 
+              done
+            - readarray -t repo_env_key_values < .env.temp
+            - repo_env_keys=()
+            - >
+              for repo_key in "${repo_env_key_values[@]}"; 
+                do echo ${repo_key%%=*}; 
+                repo_env_keys+=("${repo_key%%=*}");
+              done
+            - diff_keys_array=(`echo ${app_env_keys[@]} ${repo_env_keys[@]} | tr ' ' '\n' | sort | uniq -u `)
+            - if ((${#diff_keys_array[@]})); then
+                echo;
+                echo "~~~~~~~~~~~~~~~~~~~~ PLEASE FIX IMMEDIATELY ~~~~~~~~~~~~~~~~~~~~";
+                echo "ENV files are invalid and have the following differences in them!";
+                echo "${diff_keys_array[@]}";
+                echo;
+                echo "$ENV_KEYS_ARRAY_FILE is missing the following keys :- ";
+                echo ${app_env_keys[@]} ${app_env_keys[@]} ${repo_env_keys[@]} | tr ' ' '\n' | sort | uniq -u;
+                echo;
+                echo "ellingsengroup-environment/$APP_NAME/.env.staging is missing the following keys :-";
+                echo ${repo_env_keys[@]} ${repo_env_keys[@]} ${app_env_keys[@]} | tr ' ' '\n' | sort | uniq -u;
+                exit 1;
+              else
+                echo "ENV files are valid";
+              fi
+          artifacts:
+            - .env.temp
+      - step:
+          name: Containerize for Staging
+          image: atlassian/pipelines-awscli
+          script:
+            - echo $(aws ecr get-login --no-include-email --region $REGION)  > login.sh
+            - sh login.sh
+            - ls -alh
+            - yes | cp -rf .env.temp .env
+            - rm -rf .env.temp
+            - ls -alh
+            - cat .env
+            - docker build --no-cache -t $DOCKER_ECR_REPO_URL/$DOCKER_IMAGE_NAME .
+            - docker push $DOCKER_ECR_REPO_URL/$DOCKER_IMAGE_NAME:latest
+      - step:
+          name: Deploy to Staging
+          deployment: staging
+          image: bearengineer/awscli-kubectl
+          script:
+            - aws eks update-kubeconfig --region $REGION --name $CLUSTER_NAME
+            - kubectl scale --replicas=0 deployment $STAGING_DEPLOYMENT_NAME
+            - kubectl scale --replicas=1 deployment $STAGING_DEPLOYMENT_NAME
+  
+  # Pipelines that can only be triggered manually
+  custom: 
+    production-deploy:
+      - step:
+          deployment: production
+          script:
+            - echo "Manual triggers for deployments are awesome!"
+options:
+  docker: true

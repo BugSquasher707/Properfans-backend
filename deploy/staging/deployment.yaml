@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: properfans-backend-staging-deployment
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: properfans-backend-staging
+  template:
+    metadata:
+      labels:
+        app: properfans-backend-staging
+    spec:
+      containers:
+        - name: properfans-backend-staging
+          image: 429759051960.dkr.ecr.us-east-2.amazonaws.com/properfans-backend:latest
+          ports:
+            - containerPort: 3000
